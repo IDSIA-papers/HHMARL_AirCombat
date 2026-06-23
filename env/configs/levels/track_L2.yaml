@@ -1,0 +1,13 @@
+# Track L2: L3 maneuver opponent.
+
+aircraft:
+  B1:
+    mission: task_track
+  R2:
+    mission: model_L2Maneuver
+
+HeadingReward_track: true
+HeadingReward_scale: 0.1
+
+ShootPenaltyReward_posture_punish: false
+ShootPenaltyReward_scale: 1.0

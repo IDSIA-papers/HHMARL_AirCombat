@@ -1,0 +1,18 @@
+# Cannon L3: agent-vs-agent (R2 also runs task_cannon).
+
+aircraft:
+  B1:
+    mission: task_cannon
+  R2:
+    mission: model_SPManeuver
+
+sp_policy_name: cannon_L2_f16
+
+HeadingReward_scale: 0.05
+HeadingReward_track: false
+
+ShootReward_scale: 1
+ShootReward_orientation_kill: true
+
+ShootPenaltyReward_scale: 1
+ShootPenaltyReward_posture_punish: false

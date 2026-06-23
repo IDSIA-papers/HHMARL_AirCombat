@@ -1,0 +1,25 @@
+# Hierarchical training base. Inherits _base.yaml.
+
+sim_freq: 75
+hl_sim_steps: 10        # high-level step = hl_sim_steps * sim_steps
+map_size: 80
+horizon: 100
+
+num_agents: 6
+num_rl_agents: 3
+num_opp_agents: 3
+opp_hier_strategy: mixed   # mixed | aggressive | random
+
+aircraft:
+  R2: null   # remove base.yaml's default opponent; this config defines its own R4-R6 roster
+  B1: { model: f16, mission: task_hier, num_missiles: 10, init_state: &b_init { ic_long_gc_deg: 0.0, ic_lat_geod_deg: -0.1, ic_h_sl_ft: 19000, ic_psi_true_deg: 0.0, ic_u_fps: 800.0 } }
+  B2: { model: f16, mission: task_hier, num_missiles: 10, init_state: *b_init }
+  B3: { model: f16, mission: task_hier, num_missiles: 10, init_state: *b_init }
+  R4: { model: f16, mission: model_hier, num_missiles: 10, init_state: *b_init }
+  R5: { model: f16, mission: model_hier, num_missiles: 10, init_state: *b_init }
+  R6: { model: f16, mission: model_hier, num_missiles: 10, init_state: *b_init }
+
+ShootReward_scale: 1
+ShootReward_orientation_kill: true
+
+EventDrivenReward_scale: 1.0

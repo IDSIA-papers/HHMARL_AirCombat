@@ -1,0 +1,16 @@
+# Cannon L1: easy opponent (L2 maneuver model).
+
+aircraft:
+  B1:
+    mission: task_cannon
+  R2:
+    mission: model_L1Maneuver
+
+HeadingReward_scale: 0.05
+HeadingReward_track: false
+
+ShootReward_scale: 1
+ShootReward_orientation_kill: true
+
+ShootPenaltyReward_scale: 1
+ShootPenaltyReward_posture_punish: false

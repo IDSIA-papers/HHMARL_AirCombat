@@ -1,0 +1,15 @@
+# Track L3: agent-vs-agent (R2 also runs task_track).
+
+aircraft:
+  B1:
+    mission: task_track
+  R2:
+    mission: model_SPManeuver
+
+sp_policy_name: track_L2_f16
+
+HeadingReward_track: true
+HeadingReward_scale: 0.1
+
+ShootPenaltyReward_posture_punish: false
+ShootPenaltyReward_scale: 1.0

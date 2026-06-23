@@ -1,0 +1,15 @@
+# Track L4: strategy-model opponent.
+
+aircraft:
+  B1:
+    mission: task_track
+  R2:
+    mission: model_strategy
+
+HeadingReward_track: true
+HeadingReward_scale: 0.1
+
+ShootPenaltyReward_posture_punish: false
+ShootPenaltyReward_scale: 1.0
+
+EventDrivenReward_scale: 1.0

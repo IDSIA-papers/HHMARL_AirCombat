@@ -1,0 +1,43 @@
+# Global defaults shared by every task and level.
+# Per-level YAMLs in env/configs/levels/ deep-merge on top of this file.
+# Level files own: B1.mission, R2.mission, init_state overrides, reward scales, and any sim/horizon tweaks.
+
+# simulation
+sim_freq: 75
+sim_steps: 10   # step = 0.1s
+map_size: 50    # km
+rnd_init: true
+
+# termination limits
+horizon: 600
+altitude_limit: 2500       # m, lower bound
+altitude_limit_max: 10000  # m, upper bound
+acceleration_limit_x: 9.0
+acceleration_limit_y: 9.0
+acceleration_limit_z: 9.0
+
+# arena
+num_agents: 2
+battle_field_center: [0.0, 0.0, 0.0]
+
+# aircraft roster. Each level file sets B1.mission and R2.mission;
+# init_state values are neutral defaults — most are overwritten by env_base.reset_agent_states.
+aircraft:
+  B1:
+    model: f16
+    num_missiles: 10
+    init_state:
+      ic_long_gc_deg: 0.0
+      ic_lat_geod_deg: 0.0
+      ic_h_sl_ft: 20000
+      ic_psi_true_deg: 0.0
+      ic_u_fps: 800.0
+  R2:
+    model: f16
+    num_missiles: 10
+    init_state:
+      ic_long_gc_deg: 0.0
+      ic_lat_geod_deg: 0.0
+      ic_h_sl_ft: 20000
+      ic_psi_true_deg: 0.0
+      ic_u_fps: 600.0

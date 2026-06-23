@@ -1,0 +1,14 @@
+gymnasium==1.2.3
+jsbsim==1.3.0
+moderngl==5.12.0
+pyyaml==6.0.0
+pillow==12.0.0
+protobuf==7.34.0
+psutil==6.1.0
+pygame==2.6.0
+pymap3d==3.2.0
+tensorboard==2.20.0
+torch==2.11.0
+tqdm==4.67.0
+numpy==2.2.6
+tyro==1.0.0
