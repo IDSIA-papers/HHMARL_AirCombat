@@ -406,8 +406,9 @@ class HierTask(BaseMission):
         self.policies = self.policies_by_model['f16']
 
     def reset(self, env):
-        assert self.num_rl_agents + self.num_opp_agents == len(env.rl_agent_ids) + len(env.opp_agent_ids), \
-            f"Specified num agents {self.num_rl_agents + self.num_opp_agents} does not match env RL ids + Opp ids {len(env.rl_agent_ids) + len(env.opp_agent_ids)}. Adjust your configuration!"
+        # Aircraft flown by a human (env.human_agent_ids) replace RL agents, so all aircraft are counted
+        assert self.num_rl_agents + self.num_opp_agents == len(env.agents), \
+            f"Specified num agents {self.num_rl_agents + self.num_opp_agents} does not match the {len(env.agents)} aircraft of the env. Adjust your configuration!"
         self.policy_to_use = {aid: None for aid in env.agents.keys()}
         return super().reset(env)
 
@@ -513,7 +514,8 @@ class HierTask(BaseMission):
         policies = self.policies_by_model.get(getattr(agent, 'model', 'f16'), self.policies)
         self.policy_to_use[agent.aid] = policies[policy_type]
 
-    def run_action(self, agent, env):
+    def prepare_action(self, agent, env):
+        """Sets the flight controls chosen by the selected low-level policy."""
         # Low-level obs/control use BaseMission's layout (30-dim obs, multi-discrete action).
         ll_obs = super().get_obs(env=env, agent=agent)
         ll_action = self.get_ll_action(ll_obs, agent)
@@ -521,6 +523,9 @@ class HierTask(BaseMission):
             self._cannon(agent, env)
         ll_action = super().get_action(action=ll_action, agent=agent, env=env)
         agent.set_property_values(self.action_var, ll_action)
+
+    def run_action(self, agent, env):
+        self.prepare_action(agent, env)
         for _ in range(env.sim_steps):
             agent.run()
 

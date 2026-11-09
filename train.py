@@ -57,7 +57,7 @@ def process_args(args):
     torch.backends.cudnn.benchmark = not args.torch_deterministic
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    kwargs = {"hierarchy_level":args.hierarchy_level, "training_level": args.level+int(args.task == "track" or args.task == "escape" or args.hierarchy_level == 2), "rendering": False}
+    kwargs = {"hierarchy_level":args.hierarchy_level, "training_level": args.level+int(args.task.startswith(("track", "escape")) or args.hierarchy_level == 2), "rendering": False, "render_samples": args.render_samples}
     return args, kwargs, device
 
 

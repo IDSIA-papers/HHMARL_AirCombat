@@ -34,7 +34,8 @@ class BaseRewardFunction(ABC):
             reward, self.pre_rewards[agent_id] = reward - self.pre_rewards[agent_id], reward
         return reward
 
-    def get_orientation_metrics(self, env, agent_id, deg=False, two_d=False):
+    def get_orientation_metrics(self, env, agent_id, deg=False, two_d=False, opponent=None):
+        """opponent: the aircraft to which the metrics are computed, by default the first opponent."""
         state_vars = [
             c.position_long_gc_deg,
             c.position_lat_geod_deg,
@@ -50,7 +51,9 @@ class BaseRewardFunction(ABC):
         ego_cur_ned = LLA2NEU(*ego_state[:3], env.center_lon, env.center_lat, env.center_alt)
         ego_feature = np.array([*ego_cur_ned, *(ego_state[3:6])])
 
-        opp_state = np.array(env.agents[agent_id].opponents[0].get_property_values(state_vars))
+        if opponent is None:
+            opponent = env.agents[agent_id].opponents[0]
+        opp_state = np.array(opponent.get_property_values(state_vars))
         opp_cur_ned = LLA2NEU(*opp_state[:3], env.center_lon, env.center_lat, env.center_alt)
         opp_feature = np.array([*opp_cur_ned, *(opp_state[3:6])])
         if two_d:
@@ -110,9 +113,11 @@ class ShootReward(BaseRewardFunction):
 
     def get_reward(self, task, env, agent_id, action=None):
         reward = 0
-        if env.agents[agent_id].cannon and env.agents[agent_id].cannon.success:
+        cannon = env.agents[agent_id].cannon
+        if cannon and cannon.success:
             if self.orientation_kill:
-                _, a_t, _, _, _, _ = self.get_orientation_metrics(env, agent_id, deg=False)
+                # Aspect angle of the opponent that was hit (with several opponents not necessarily the first one)
+                _, a_t, _, _, _, _ = self.get_orientation_metrics(env, agent_id, deg=False, opponent=cannon.target)
                 scale, shift = task.shift_range(-1, 1, 5, 10)
                 reward += float(np.cos(a_t) * scale + shift)
             else:

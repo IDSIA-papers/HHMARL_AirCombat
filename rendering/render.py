@@ -2,6 +2,7 @@ import pygame as pg
 import numpy as np
 import moderngl as mgl
 import os
+import warnings
 
 from rendering.quaternion import Quaternion
 
@@ -299,7 +300,13 @@ class Text(RenderObject):
 
 
 class Viewer:
-    def __init__(self, width, height, caption=None,fps=30, headless=False):
+    def __init__(self, width, height, caption=None,fps=30, headless=False, samples=4):
+        """
+        samples: anti-aliasing (MSAA) samples per pixel, 0 = anti-aliasing off.
+        Values are rounded down to what the driver supports (power of two, at most ctx.max_samples).
+        The window itself is created without MSAA (not every display server offers MSAA windows, e.g. WSLg),
+        instead the scene is drawn into an offscreen MSAA framebuffer and copied to the window.
+        """
         self.transform = Transform()
         self.width = width
         self.height = height
@@ -313,14 +320,25 @@ class Viewer:
             pg.init()
             pg.display.gl_set_attribute(pg.GL_CONTEXT_MAJOR_VERSION, 3)
             pg.display.gl_set_attribute(pg.GL_CONTEXT_MINOR_VERSION, 3)
-            pg.display.gl_set_attribute(pg.GL_MULTISAMPLEBUFFERS, 1)
-            pg.display.gl_set_attribute(pg.GL_MULTISAMPLESAMPLES, 3)
             self.display = pg.display.set_mode((width, height), pg.DOUBLEBUF | pg.OPENGL)
             self.ctx = mgl.create_context()
             self.clock = pg.time.Clock()
             if caption:
                 pg.display.set_caption(caption)
-        
+
+        # drivers only accept powers of two up to max_samples (e.g. 2 or 4), so round down
+        samples = min(int(samples), self.ctx.max_samples)
+        self.samples = 1 << (samples.bit_length() - 1) if samples > 1 else 0
+        try:
+            self.scene_fbo = self._create_scene_fbo(width, height, self.samples)
+        except mgl.Error as e:
+            warnings.warn(f"MSAA with {self.samples} samples not supported, rendering without anti-aliasing ({e})")
+            self.samples = 0
+            self.scene_fbo = self._create_scene_fbo(width, height, 0)
+        # Final image without depth buffer: copied to the window and read by get_frame().
+        # Copying to the window only works from a framebuffer without depth, since its depth format differs from the window's.
+        self.fbo = self.ctx.framebuffer(color_attachments=[self.ctx.renderbuffer((width, height))])
+
         self.ctx.enable(mgl.DEPTH_TEST)
         self.ctx.enable(mgl.BLEND)
         self.ctx.blend_func = (mgl.SRC_ALPHA, mgl.ONE_MINUS_SRC_ALPHA)
@@ -374,18 +392,31 @@ class Viewer:
         self.prog['view'] = tuple(np.hstack(self.transform.inv_matrix.T))
         self.unlit['view'] = tuple(np.hstack(self.transform.inv_matrix.T))
 
+    def _create_scene_fbo(self, width, height, samples):
+        return self.ctx.framebuffer(
+            color_attachments=[self.ctx.renderbuffer((width, height), samples=samples)],
+            depth_attachment=self.ctx.depth_renderbuffer((width, height), samples=samples),
+        )
+
     def get_frame(self):
-        data = self.ctx.fbo.read()
+        data = self.fbo.read()
         return np.array(bytearray(data)).reshape(self.height, self.width,3)[-1::-1,:,:]
-    
+
     def render(self):
-        pg.event.pump()
+        if self.display is not None:
+            pg.event.pump()
+
+        self.scene_fbo.use()
         self.ctx.clear(0.5, 0.5, 0.5, 1.0)
 
         for obj in self.objects:
             obj.render()
 
-        pg.display.flip()
+        # resolves the MSAA samples (if any) into the final image
+        self.ctx.copy_framebuffer(self.fbo, self.scene_fbo)
+        if self.display is not None:
+            self.ctx.copy_framebuffer(self.ctx.screen, self.fbo)
+            pg.display.flip()
     
     def close(self):
         pg.quit()

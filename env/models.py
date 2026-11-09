@@ -6,6 +6,7 @@ from gymnasium import spaces
 
 from env.catalog import Catalog as c
 from env.missions import BaseMission
+from env.terminations import DeadAgent
 from env.base_actor.baseline_actor import BaselineActor
 from env.utils import get_root_dir, in_range_rad, load_pretrained_actors
 from args import Args
@@ -46,7 +47,8 @@ class TrackModel(BaseMission):
         self.actor.eval()
 
     def reset(self, env):
-        self.rnn_states = np.zeros((1, 1, 128))
+        # Per aircraft, as one mission object serves all aircraft with this mission (e.g. several opponents).
+        self.rnn_states = {aid: np.zeros((1, 1, 128)) for aid in env.agents.keys()}
         super().reset(env)
 
     def get_obs(self, env, agent, **kwargs):
@@ -71,7 +73,8 @@ class TrackModel(BaseMission):
     def get_action(self, action=None, agent=None, env=None):
         delta_value = self.set_delta_value(agent)
         observation = self.get_obs(None, agent, kwargs={"delta": delta_value})
-        _action, self.rnn_states = self.actor(observation, self.rnn_states)
+        with torch.no_grad():
+            _action, self.rnn_states[agent.aid] = self.actor(observation, self.rnn_states[agent.aid])
         return self.shift_action(_action.detach().cpu().numpy().squeeze())
 
     def shift_action(self, action):
@@ -116,34 +119,36 @@ class L1maneuverModel(TrackModel):
         self.target_velocity = 250
 
     def reset(self, env):
-        self._step = 0
-        self._i = 0
-        self._rnd_head = 0
-        self._rnd_vel = 0
+        # Per aircraft, as one mission object serves all aircraft with this mission (e.g. several opponents).
+        self._step = {aid: 0 for aid in env.agents.keys()}
+        self._i = {aid: 0 for aid in env.agents.keys()}
+        self._rnd_head = {aid: 0 for aid in env.agents.keys()}
+        self._rnd_vel = {aid: 0 for aid in env.agents.keys()}
         self.turn_interval = np.random.randint(20, 60)
         self.step_interval = self.turn_interval / 0.1
         self.init_heading = np.random.choice([0, 2*np.pi])
         super().reset(env)
 
     def set_delta_value(self, agent):
+        aid = agent.aid
         cur_heading = agent.get_property_value(c.attitude_heading_true_rad)
-        if self._step % self.step_interval == 0:
-            self._i = (self._i + 1) % 3
-            self._rnd_head = np.random.randint(-900, 900)
-            self._rnd_vel = np.random.randint(-30, 30)
+        if self._step[aid] % self.step_interval == 0:
+            self._i[aid] = (self._i[aid] + 1) % 3
+            self._rnd_head[aid] = np.random.randint(-900, 900)
+            self._rnd_vel[aid] = np.random.randint(-30, 30)
 
         if self.init_heading:
-            delta_heading = self.init_heading - self.target_heading_list[self._i] - cur_heading
+            delta_heading = self.init_heading - self.target_heading_list[self._i[aid]] - cur_heading
         else:
-            delta_heading = self.target_heading_list[self._i] - cur_heading
-        delta_altitude = self.target_altitude + self._rnd_head - agent.get_property_value(c.position_h_sl_m)
-        delta_velocity = self.target_velocity + self._rnd_vel - agent.get_property_value(c.velocities_u_mps)
-        self._step += 1
+            delta_heading = self.target_heading_list[self._i[aid]] - cur_heading
+        delta_altitude = self.target_altitude + self._rnd_head[aid] - agent.get_property_value(c.position_h_sl_m)
+        delta_velocity = self.target_velocity + self._rnd_vel[aid] - agent.get_property_value(c.velocities_u_mps)
+        self._step[aid] += 1
         return np.array([delta_altitude, delta_heading, delta_velocity])
 
     def get_action(self, action=None, agent=None, env=None):
         if (agent.cannon.ready
-                and self._step % self.step_interval in range(100, 130)
+                and self._step[agent.aid] % self.step_interval in range(100, 130)
                 and random.choices([True, False], weights=[0.4, 0.6], k=1)[0]):
             agent.cannon.launch(parent=agent, env=env)
         return super().get_action(action, agent, env)
@@ -172,7 +177,8 @@ class L2maneuverModel(TrackModel):
         delta_value[2] = delta_value[2] + self.rnd_vel
 
         observation = self.get_obs(None, agent, kwargs={"delta": delta_value})
-        _action, self.rnn_states = self.actor(observation, self.rnn_states)
+        with torch.no_grad():
+            _action, self.rnn_states[agent.aid] = self.actor(observation, self.rnn_states[agent.aid])
         return self.shift_action(_action.detach().cpu().numpy().squeeze())
 
     def check_cannon(self, agent, env):
@@ -277,7 +283,7 @@ class StrategyModel(BaseMission):
             self.policies[task] = actors
 
     def reset(self, env):
-        self.policy_set_step = 0
+        self.policy_set_step = {aid: 0 for aid in env.agents.keys()}
         self.policy_to_use = {aid: None for aid in env.agents.keys()}
         return super().reset(env)
 
@@ -292,9 +298,10 @@ class StrategyModel(BaseMission):
 
     def get_action(self, action, agent, env):
         # Switch strategy every (env.horizon / 3) steps (horizon 600 -> every 200 steps).
-        if self.policy_set_step == 0 or abs(env.steps - self.policy_set_step) > (env.horizon / 3):
+        policy_set_step = self.policy_set_step[agent.aid]
+        if policy_set_step == 0 or abs(env.steps - policy_set_step) > (env.horizon / 3):
             self.set_policy(action, agent, env)
-            self.policy_set_step = env.steps
+            self.policy_set_step[agent.aid] = env.steps
 
         assert self.policy_to_use[agent.aid] is not None, f"No policy was selected for agent {agent.aid}"
 
@@ -392,13 +399,17 @@ class HierModel(BaseMission):
             act = np.random.randint(0, 3)
         self.policy_to_use[agent.aid] = self.policies[self.HL_ACTION_MAPPING[act]]
 
-    def run_action(self, agent, env):
+    def prepare_action(self, agent, env):
+        """Sets the flight controls chosen by the selected low-level policy."""
         ll_obs = self.get_obs(env=env, agent=agent)
         ll_action = self.get_ll_action(ll_obs, agent)
         if bool(ll_action[4]):
             self._cannon(agent, env)
         ll_action = self.get_action(action=ll_action, agent=agent, env=env)
         agent.set_property_values(self.action_var, ll_action)
+
+    def run_action(self, agent, env):
+        self.prepare_action(agent, env)
         for _ in range(env.sim_steps):
             agent.run()
 
@@ -415,3 +426,54 @@ class HierModel(BaseMission):
     def _cannon(self, agent, env):
         if agent.alive and agent.cannon.ready:
             agent.cannon.launch(parent=agent, env=env)
+
+
+class HumanModel(BaseMission):
+    """Aircraft flown by a human with the joysticks or the keyboard of FlightSim (MANUAL in test.py).
+
+    The flight controls and the fire button of the joystick (or the fire key, space) are read from FlightSim before every JSBSim
+    step (see FlightSimBridge.before_substep). Unlike for the RL agents, the cannon fires exactly while the button is held
+    (CannonSim.fire), without the time limit, the waiting time and the limited ammunition of CannonSim.launch.
+    """
+
+    def load_obs_space(self):
+        # Not an RL agent, so no observation space is needed.
+        pass
+
+    def load_rewards(self):
+        self.rewards = []
+
+    def get_action(self, action=None, agent=None, env=None):
+        flightsim = getattr(env, "flightsim", None)
+        if flightsim is None or flightsim.manual_agent != agent.aid:
+            raise RuntimeError(f"{agent.aid} is flown by a human, which needs FlightSim with manual_agent='{agent.aid}'")
+        return flightsim.manual_controls()
+
+    def fire_cannon(self, agent, env, firing):
+        """Fires the cannon while firing is True (the fire button is held), and stops it at once otherwise.
+        Called by FlightSimBridge before every JSBSim step."""
+        if firing and agent.alive:
+            agent.cannon.fire(parent=agent, env=env)
+        else:
+            agent.cannon.cease_fire()
+
+    def set_policy(self, action, agent, env):
+        # The commander of the hierarchical env does not command the human.
+        pass
+
+    def prepare_action(self, agent, env):
+        agent.set_property_values(self.action_var, self.get_action(agent=agent, env=env))
+
+    def run_action(self, agent, env):
+        self.prepare_action(agent, env)
+        for _ in range(env.sim_steps):
+            agent.run()
+
+    def step(self, env, agent):
+        if agent.cannon.done:
+            agent.cannon.revert_cannon()
+        # The env only checks the terminations of RL agents, so the crashes of the human are checked here.
+        if agent.alive:
+            for condition in self.terminations:
+                if not isinstance(condition, DeadAgent):
+                    condition.get_termination(self, env, agent.aid)

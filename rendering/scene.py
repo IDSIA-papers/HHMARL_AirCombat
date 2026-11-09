@@ -8,7 +8,7 @@ class Scene:
     RADIUS = 6.3781e6 #earth radius
 
     def __init__(self, env):
-        self.viewer = Viewer(1280, 720)
+        self.viewer = Viewer(1280, 720, samples=env.render_samples)
         self.env = env
         self.objects = {}
         self.objects_dead_pos = {}
@@ -99,7 +99,8 @@ class Scene:
 
             self.objects[aid] = [aircraft, aircraft_cone, dead_cone]
 
-        self.grid = Grid(self.viewer.ctx, self.viewer.unlit, getattr(self.env.config, 'map_size', 100), 1., True)
+        # Grid takes the number of lines: map_size + 1 lines 1 km apart cover the map (map_size km wide) with map_size squares
+        self.grid = Grid(self.viewer.ctx, self.viewer.unlit, getattr(self.env.config, 'map_size', 100) + 1, 1., True)
         self.text = Text(self.viewer.ctx, self._load_text())
         #self.viewer.objects.extend(self.objects)
 

@@ -132,12 +132,17 @@ def _env_worker(
     task,
     env_kwargs,
     use_avail=True,
+    centralized_critic=True,
 ):
     env = AircombatMARL(task=task, **env_kwargs)
     agent_keys = env.agent_keys
 
     def _obs_to_array(obs_dict):
         return np.array([obs_dict[k] for k in agent_keys], dtype=np.float32)
+
+    def _state(obs):
+        # Centralized critic: one state per env (state_dim,). Per-agent critic: the own obs of each agent (A, state_dim).
+        return env.get_state() if centralized_critic else obs
 
     def _avail_to_array(avail_dict):
         return np.array([avail_dict[k] for k in agent_keys], dtype=np.bool_)
@@ -163,10 +168,11 @@ def _env_worker(
         command, content = worker.recv()
         if command == "reset":
             obs_dict, _ = env.reset()
+            obs = _obs_to_array(obs_dict)
             worker.send({
-                "obs": _obs_to_array(obs_dict),
+                "obs": obs,
                 "avail_actions": _avail_to_array(env.get_avail_actions()) if use_avail else None,
-                "state": env.get_state(),
+                "state": _state(obs),
             })
         elif command == "get_env_info":
             worker.send({
@@ -182,16 +188,17 @@ def _env_worker(
             done = done_dict["all"]
             truncated = truncated_dict["all"]
             agent_dones = np.array([done_dict[k] for k in agent_keys], dtype=np.bool_)
-            
+            next_obs = _obs_to_array(obs_dict)
+
             # next_state: skip only for true terminal (done without truncation) — env resets
             # anyway and the value is never used for GAE bootstrap or current-state update.
-            next_state = None if (done and not truncated) else env.get_state()
+            next_state = None if (done and not truncated) else _state(next_obs)
             avail_actions = (
                 None if (done or truncated or not use_avail)
                 else _avail_to_array(env.get_avail_actions())
             )
             worker.send({
-                "next_obs": _obs_to_array(obs_dict),
+                "next_obs": next_obs,
                 "reward": _reward_to_array(reward_dict),
                 "done": done,
                 "truncated": truncated,
@@ -223,6 +230,7 @@ class Workers:
                         "seed": args.seed + i * 1000,
                     },
                     getattr(args, "avail_actions", True),
+                    args.centralized_critic,
                 ),
             )
             for i in range(args.num_envs)

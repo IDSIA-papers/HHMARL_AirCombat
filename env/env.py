@@ -5,20 +5,31 @@ from gymnasium.utils import seeding
 import numpy as np
 from typing import Any, Tuple
 from env.sim import AircraftSim
-from env.utils import parse_config
+from env.utils import parse_config, LLA2NEU, NEU2LLA
 from rendering.scene import Scene
 
 
 class AircraftEnv(gym.Env):
-    """Base class for low-level aircraft combat training."""
+    """Base class for low-level aircraft combat training.
+
+    Optional config entries besides the mission config:
+      config_overrides (dict): deep-merged into the mission config, e.g. {"battle_field_center": [lon, lat, 0.0]}.
+      flightsim (dict): shows the aircraft in FlightSim, with the arguments of rendering.flightsim.FlightSimBridge,
+        e.g. {"jsbsim_states": "python", "manual_agent": "B2"}. The manual agent is flown by a human with the joysticks or the
+        keyboard (mission model_human). It is added as a copy of the first aircraft of its team if the config has no such aircraft.
+    """
 
     metadata = {"render.modes": ["simple", "fg"]}
 
     def __init__(self, config: dict):
         self.log = logging.getLogger(__name__)
-        self.config = parse_config(config["mission_config"])
+        self.config = parse_config(config["mission_config"], config.get("config_overrides"))
+        flightsim_options = config.get("flightsim")
+        if flightsim_options and flightsim_options.get("manual_agent"):
+            self._add_human_agent(flightsim_options["manual_agent"])
         self.hierarchy_level = config["hierarchy_level"]
         self.training_level = config["training_level"]
+        self.render_samples = config.get("render_samples", 4)
         self.rnd_init_states = getattr(self.config, "rnd_init", True)
         self.horizon = getattr(self.config, "horizon", 1000)
         self.sim_freq = getattr(self.config, "sim_freq", 100)
@@ -33,6 +44,20 @@ class AircraftEnv(gym.Env):
         self.load_agents()
         self.load_spaces()
         self.seed()
+        self.flightsim = None
+        if flightsim_options is not None:
+            from rendering.flightsim import FlightSimBridge
+            self.flightsim = FlightSimBridge(self, **flightsim_options)
+
+    def _add_human_agent(self, aid):
+        """Lets a human fly aircraft aid, see the class docstring."""
+        aircraft = self.config.aircraft
+        if aid in aircraft:
+            aircraft[aid] = {**aircraft[aid], "mission": "model_human"}
+        else:
+            team = [cfg for other, cfg in aircraft.items() if other[0] == aid[0]]
+            assert team, f"Manual agent {aid}: the config has no aircraft of team {aid[0]} to copy"
+            aircraft[aid] = {**team[0], "mission": "model_human"}
 
     def load_missions(self):
         # Lookup order matters: missions module hosts trainable Tasks (with cannon firing),
@@ -58,10 +83,12 @@ class AircraftEnv(gym.Env):
         self.teams = {}
         self.rl_agent_ids = []
         self.opp_agent_ids = []
+        self.human_agent_ids = []  # aircraft flown by a human, which are not opponents (see _add_human_agent)
         origin = getattr(self.config, "battle_field_center", (0.0, 0.0, 0.0))
         for aid, config in self.config.aircraft.items():
             mission = config.get("mission")
             is_learning = mission.split("_")[0] == "task"
+            is_human = mission == "model_human"
             self.agents[aid] = AircraftSim(
                 tid=aid[0],
                 aid=aid,
@@ -75,7 +102,12 @@ class AircraftEnv(gym.Env):
                 sim_steps=self.sim_steps,
                 unlimited_fuel=config.get("unlimited_fuel", True),
             )
-            (self.rl_agent_ids if is_learning else self.opp_agent_ids).append(aid)
+            if is_learning:
+                self.rl_agent_ids.append(aid)
+            elif is_human:
+                self.human_agent_ids.append(aid)
+            else:
+                self.opp_agent_ids.append(aid)
             self.teams.setdefault(aid[0], []).append(aid)
 
         for aid, agent in self.agents.items():
@@ -96,12 +128,18 @@ class AircraftEnv(gym.Env):
         self.action_space = gym.spaces.Dict(act)
         self.log.info(f"Observation space={self.observation_space}, Action space={self.action_space}")
 
-    def reset_agent_states(self):
+    def reset_agent_states(self, init_states=None):
+        """Reloads the aircraft at their initial states: init_states[aid] if given (see to_init_state),
+        otherwise the init_state of the config, randomized if rnd_init."""
+        init_states = init_states or {}
         lvl1 = self.training_level == 1
         hier1 = self.hierarchy_level == 1
         rng = self.np_random
-        for agent in self.agents.values():
-            state = agent.init_state.copy()
+        for aid, agent in self.agents.items():
+            if aid in init_states:
+                agent.reload(new_state=self.to_init_state(init_states[aid]))
+                continue
+            state = dict(self.config.aircraft[aid].get("init_state") or {})
             if self.rnd_init_states:
                 for sk in state:
                     if sk == "ic_psi_true_deg":
@@ -124,16 +162,50 @@ class AircraftEnv(gym.Env):
                         )
                     else:
                         raise ValueError(f"Init state key {sk} not randomized.")
-            agent.reload(new_state=state)
+            agent.reload(new_state=self._relocate(state))
+
+    def _relocate(self, state):
+        """Moves an initial state of the configs, whose positions are around longitude and latitude 0,
+        to the same north/east offset from the battle field center."""
+        if (self.center_lon, self.center_lat) == (0.0, 0.0) or "ic_long_gc_deg" not in state:
+            return state
+        north, east, _ = LLA2NEU(state["ic_long_gc_deg"], state["ic_lat_geod_deg"], 0.0)
+        lon, lat, _ = NEU2LLA(north, east, 0.0, self.center_lon, self.center_lat, 0.0)
+        return {**state, "ic_long_gc_deg": float(lon), "ic_lat_geod_deg": float(lat)}
+
+    def to_init_state(self, spec):
+        """Converts an initial state relative to the battle field center into JSBSim initial conditions.
+        spec: "north" and "east" in m from the battle field center (default 0), or "lat" and "lon" in degrees,
+        "alt" in m above sea level, "speed" in m/s along the aircraft axis, "heading" in degrees (default 0),
+        and optionally "roll" and "pitch" in degrees."""
+        if "lat" in spec or "lon" in spec:
+            lon, lat = spec["lon"], spec["lat"]
+        else:
+            lon, lat, _ = NEU2LLA(spec.get("north", 0.0), spec.get("east", 0.0), 0.0, self.center_lon, self.center_lat, 0.0)
+        state = {
+            "ic_long_gc_deg": float(lon),
+            "ic_lat_geod_deg": float(lat),
+            "ic_h_sl_ft": spec["alt"] / 0.3048,
+            "ic_psi_true_deg": spec.get("heading", 0.0) % 360,
+            "ic_u_fps": spec["speed"] / 0.3048,
+        }
+        if "roll" in spec:
+            state["ic_phi_deg"] = spec["roll"]
+        if "pitch" in spec:
+            state["ic_theta_deg"] = spec["pitch"]
+        return state
 
     def reset(self, seed=None, options=None) -> Tuple[dict, dict]:
+        """options: {"init_states": {aid: spec}} sets the initial states of the given aircraft, see to_init_state()."""
         if seed is not None:
             self.seed(seed)
         self.steps = 0
-        self.reset_agent_states()
+        self.reset_agent_states((options or {}).get("init_states"))
         for mission in self.missions.values():
             mission.reset(self)
         self._alive_last_step = {aid for aid in self.agents}
+        if self.flightsim is not None:
+            self.flightsim.on_reset(self)
         return self.get_obs(), {}
 
     def step(self, action: Any) -> Tuple[dict, dict, dict, dict, dict]:
@@ -147,8 +219,7 @@ class AircraftEnv(gym.Env):
             agent.set_property_values(agent.mission.action_var, act)
 
         for _ in range(self.sim_steps):
-            for agent in self.agents.values():
-                agent.run()
+            self.run_substep(self.agents.values())
 
         obs = {}
         terminated = {}
@@ -169,6 +240,15 @@ class AircraftEnv(gym.Env):
         truncated["all"] = timed_out
         self.log.debug(f"step={self.steps}, term={terminated}, trunc={truncated}")
         return obs, rewards, terminated, truncated, info
+
+    def run_substep(self, agents):
+        """Advances the given aircraft by one JSBSim step (1/sim_freq seconds)."""
+        if self.flightsim is not None:
+            self.flightsim.before_substep(self)
+        for agent in agents:
+            agent.run()
+        if self.flightsim is not None:
+            self.flightsim.after_substep(self)
 
     def get_obs(self, aid: str = None) -> dict:
         if aid is not None:
@@ -209,8 +289,13 @@ class AircraftEnv(gym.Env):
         for agent in self.agents.values():
             agent.close()
         self.agents.clear()
+        if self.flightsim is not None:
+            self.flightsim.close()
+            self.flightsim = None
 
     def render(self, viewpoint=0):
+        if self.flightsim is not None:
+            return  # FlightSim renders after every JSBSim step, see FlightSimBridge
         if not self.scene:
             self.scene = Scene(self)
         self.scene.render(viewpoint)
@@ -254,12 +339,25 @@ class AircraftEnvHier(AircraftEnv):
         for _ in range(self.hl_sim_steps):
             if self.rendering:
                 self.render(viewpoint=self.render_view)
+            alive_before = {aid for aid, agent in self.agents.items() if agent.alive}
+            if self.flightsim is None:
+                for aid, agent in self.agents.items():
+                    if not agent.alive:
+                        continue
+                    agent.mission.run_action(agent=agent, env=self)
+            else:
+                # FlightSim shows all aircraft at the same time, so they are simulated in lockstep:
+                # all aircraft set their controls first, then all are advanced together.
+                for agent in self.agents.values():
+                    if agent.alive:
+                        agent.mission.prepare_action(agent=agent, env=self)
+                for _ in range(self.sim_steps):
+                    self.run_substep([agent for agent in self.agents.values() if agent.alive])
             for aid, agent in self.agents.items():
-                if not agent.alive:
-                    continue
-                agent.mission.run_action(agent=agent, env=self)
-            for aid, agent in self.agents.items():
-                if agent.is_learning and agent.alive:
+                # Agents alive before this low-level step, so that an agent shot down or crashed in it gets the penalty
+                # of EventDrivenReward once. Its terminations are checked here, so that a crash ends it at once.
+                if agent.is_learning and aid in alive_before:
+                    agent.mission.get_termination(self, aid)
                     rewards[aid] += self.get_reward(aid, action, raw_value=True)
                 if agent.alive:
                     agent.mission.step(self, agent)
@@ -283,14 +381,14 @@ class AircraftEnvHier(AircraftEnv):
         info = self._combat_info()
         self._alive_last_step = {aid for aid, agent in self.agents.items() if agent.alive}
 
+        # The time limit is a truncation, not a terminal state (the learner bootstraps the value after it)
         all_done = (
             all(terminated[aid] for aid in self.rl_agent_ids)
             or self._opponents_eliminated()
             or terminated_event
-            or timed_out
         )
         terminated["all"] = all_done
-        truncated["all"] = timed_out and not all(terminated[aid] for aid in self.rl_agent_ids)
+        truncated["all"] = timed_out and not all_done
 
         self.log.debug(f"hl_step={self.steps}, term={terminated}, trunc={truncated}")
         return obs, rewards, terminated, truncated, info
@@ -359,7 +457,10 @@ class AircombatMARL:
         return self.env.observation_space[self.first_agent].shape[0]
 
     def get_state(self):
-        return self.env.get_obs(self.first_agent)[self.first_agent]
+        """State of the centralized critic: the obs of the first alive RL agent (the obs of a dead agent is zeros in
+        AircraftEnvHier), which also contains its closest opponents and friendlies."""
+        aid = next((aid for aid in self.agent_keys if self.env.agents[aid].alive), self.first_agent)
+        return self.env.get_obs(aid)[aid]
 
     def get_action_size(self):
         if self._is_discrete:

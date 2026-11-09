@@ -1,14 +1,18 @@
+# Python 3.12: pip install -r requirements.txt
 gymnasium==1.2.3
 jsbsim==1.3.0
 moderngl==5.12.0
-pyyaml==6.0.0
-pillow==12.0.0
-protobuf==7.34.0
+pyyaml==6.0.3
+pillow==12.2.0
+protobuf==7.34.1
 psutil==6.1.0
-pygame==2.6.0
+# pygame-ce replaces pygame (same "import pygame"), uninstall pygame first in an existing venv
+pygame-ce==2.5.8
 pymap3d==3.2.0
 tensorboard==2.20.0
 torch==2.11.0
-tqdm==4.67.0
+tqdm==4.67.3
 numpy==2.2.6
-tyro==1.0.0
+tyro==1.0.13
+# ffmpeg for the videos recorded in FlightSim (key R)
+imageio-ffmpeg==0.6.0

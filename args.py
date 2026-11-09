@@ -35,7 +35,7 @@ class Args:
     """ Number of hidden layers of actor network"""
     shared_policies: bool = True
     """ Share one actor across all agents; otherwise one actor per agent"""
-    centralized_critic: bool = True
+    centralized_critic: bool = False
     """ If True, critic takes global state as input (MAPPO); if False, takes each agent's local obs (IPPO) """
     critic_hidden_dim: int = 128
     """ Hidden dimension of critic network"""
@@ -123,3 +123,5 @@ class Args:
     """ If True, apply torch.compile to actors' .act and critic.forward (dynamic shapes). Disable if compilation regresses on your hardware. """
     restore_path: str | None = None
     """ Path to a checkpoint file or directory (loads the latest checkpoint) to resume training. None disables restore. """
+    render_samples: int = 4
+    """ Anti-aliasing (MSAA) samples per pixel when rendering; 0 disables anti-aliasing. Rounded down to a power of two the GPU supports. """

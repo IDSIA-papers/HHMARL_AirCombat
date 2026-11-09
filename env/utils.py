@@ -54,13 +54,14 @@ def _load_yaml(path):
         return yaml.load(f, Loader=yaml.FullLoader) or {}
 
 
-def parse_config(name):
+def parse_config(name, overrides=None):
     """Load a config by name with a deep merge of base.yaml and the level file.
 
     Accepted forms (all relative to env/configs/):
       "cannon/L1"             -> base.yaml <- levels/cannon_L1.yaml
       "cannon/L1_cannon"      -> same as cannon/L1 (back-compat with the old "L<N>_<task>" form)
       "hier"                  -> base.yaml <- hier(_7vs7).yaml
+    overrides (dict, optional) is deep-merged last, e.g. {"battle_field_center": [8.97, 45.98, 0.0]}.
     """
     cfg_root = os.path.join(get_root_dir(), 'env', 'configs')
     base_path = os.path.join(cfg_root, 'base.yaml')
@@ -79,6 +80,9 @@ def parse_config(name):
         cfg_path = os.path.join(cfg_root, f'{name}.yaml')
         assert os.path.exists(cfg_path), f"Missing config at {cfg_path}"
         merged = _deep_merge(merged, _load_yaml(cfg_path))
+
+    if overrides:
+        merged = _deep_merge(merged, overrides)
 
     # A config may remove an inherited aircraft (e.g. base.yaml's R2 when a hier
     # roster uses different ids) by setting it to null. Drop those entries so the

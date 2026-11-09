@@ -19,6 +19,7 @@ class Batch(NamedTuple):
     batch_avail_actions: torch.Tensor
     batch_done: torch.Tensor        # (T, E) float — 1 only for TRUE terminal (not time-limit)
     batch_truncated: torch.Tensor   # (T, E) float — 1 for time-limit truncation
+    batch_agent_done: torch.Tensor  # (T, E, A) float — 1 if the agent is terminated (e.g. shot down) after the step
     batch_values: torch.Tensor               # (T, E, A) always
     batch_terminal_values: torch.Tensor      # (T, E, A) — V(next_state) at truncated steps (0 elsewhere)
     batch_time_mask: torch.Tensor           # (T, E) bool
@@ -109,6 +110,7 @@ class RolloutBuffer:
         )
         self.done = torch.zeros((num_steps, num_envs), dtype=torch.float32, device=device)
         self.truncated = torch.zeros((num_steps, num_envs), dtype=torch.float32, device=device)
+        self.agent_dones = torch.zeros((num_steps, num_envs, num_agents), dtype=torch.float32, device=device)
         self.values = torch.zeros(
             (num_steps, num_envs, num_agents), dtype=torch.float32, device=device
         )
@@ -152,6 +154,7 @@ class RolloutBuffer:
         avail_actions,                  # (E, A, act_D)   GPU or None
         dones: np.ndarray,              # (E,)  float32   CPU
         truncated: np.ndarray,          # (E,)  float32   CPU
+        agent_dones: np.ndarray,        # (E, A) bool     CPU
         values: torch.Tensor,           # (E, A)          GPU
         active_masks: np.ndarray,       # (E, A) float32  CPU
         rnn_states_actor=None,          # (E, A, L, H)    GPU or None
@@ -172,6 +175,7 @@ class RolloutBuffer:
         self.reward[step_idx, :E]       = torch.as_tensor(rewards,      dtype=torch.float32, device=self.device)
         self.done[step_idx, :E]         = torch.as_tensor(dones,        dtype=torch.float32, device=self.device)
         self.truncated[step_idx, :E]    = torch.as_tensor(truncated,    dtype=torch.float32, device=self.device)
+        self.agent_dones[step_idx, :E]  = torch.as_tensor(agent_dones,  dtype=torch.float32, device=self.device)
         self.active_masks[step_idx, :E] = torch.as_tensor(active_masks, dtype=torch.float32, device=self.device)
         if self.rnn and rnn_states_actor is not None:
             self.rnn_states_actor[step_idx, :E]  = rnn_states_actor
@@ -188,6 +192,7 @@ class RolloutBuffer:
             batch_avail_actions=self.avail_actions,
             batch_done=self.done,
             batch_truncated=self.truncated,
+            batch_agent_done=self.agent_dones,
             batch_values=self.values,
             batch_terminal_values=self.terminal_values,
             batch_time_mask=self.time_mask,
@@ -574,6 +579,7 @@ class Learner:
                 avail_actions=avail_action_tensor,
                 dones=dones_buf,
                 truncated=truncated_buf,
+                agent_dones=agent_dones_view,
                 values=values,
                 active_masks=active_masks_buf,
                 rnn_states_actor=rnn_hxs_a,  # view of h_t — copied inside add_step before overwrite below
@@ -716,11 +722,13 @@ class Learner:
                 raw_next_values = next_values                      # (E, A)
                 raw_terminal_values = batch.batch_terminal_values  # (T, E, A)
 
-            # bootstrap_mask: allow V(s_{t+1}) for truncated, zero only for true terminal
-            bootstrap_mask = (1.0 - batch.batch_done).unsqueeze(-1)            # (T, E, 1)
-            # gae_continue: stop GAE accumulation at any episode boundary
+            # An agent's own termination (e.g. shot down while its team fights on) ends its return like a true terminal.
+            agent_done = batch.batch_agent_done                                # (T, E, A)
+            # bootstrap_mask: allow V(s_{t+1}) for truncated, zero only for true terminal (of the env or the agent)
+            bootstrap_mask = 1.0 - torch.maximum(batch.batch_done.unsqueeze(-1), agent_done)        # (T, E, A)
+            # gae_continue: stop GAE accumulation at any episode boundary and at the agent's termination
             episode_end = (batch.batch_done.bool() | batch.batch_truncated.bool()).float()
-            gae_continue = (1.0 - episode_end).unsqueeze(-1)                   # (T, E, 1)
+            gae_continue = 1.0 - torch.maximum(episode_end.unsqueeze(-1), agent_done)              # (T, E, A)
             reward = batch.batch_reward                                        # (T, E, A)
 
             # next_val[t] = V(s_{t+1}); last valid step per env gets the critic bootstrap

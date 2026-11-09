@@ -1,3 +1,4 @@
 /runs
-/venv
+/venv*
 __pycache__
+/recordings
